@@ -114,8 +114,15 @@ Schritt "Skripte nach $hgiOrdner ($Modus)"
 New-Item -ItemType Directory -Force "$hgiOrdner\Logs" | Out-Null
 # Nur SYSTEM (S-1-5-18) und Administratoren (S-1-5-32-544). Wichtig, weil SYSTEM die Skripte
 # ausführt: Dürfte ein normaler Benutzer sie ändern, liefe sein Code mit vollen Rechten.
-& icacls $hgiOrdner /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /Q | Out-Null
+# Die Rechte gehören nur auf den Ordner; alles darin erbt sie. Nicht mit /T auf die Dateien setzen:
+# Auf Dateien greifen (OI)(CI) nicht, sie bleiben dann ganz ohne Rechte (ab dem zweiten Lauf).
+& icacls $hgiOrdner /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { Abbruch "Rechte auf $hgiOrdner nicht gesetzt (icacls $LASTEXITCODE)" }
+# Was schon im Ordner liegt, wieder auf "erbt vom Ordner" stellen (repariert auch Läufe mit v1.0.0)
+if (Get-ChildItem $hgiOrdner -Force) {
+    & icacls "$hgiOrdner\*" /reset /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { Abbruch "Rechte im Ordner $hgiOrdner nicht zurückgesetzt (icacls $LASTEXITCODE)" }
+}
 
 foreach ($datei in 'Zugang.ps1', 'DNS-Eintrag.ps1', 'FMS-Zertifikat-Import.ps1') {
     Copy-Item (Join-Path $PSScriptRoot $datei) $hgiOrdner -Force
