@@ -378,8 +378,10 @@ $wacsBasis = @(
     '--store', 'pemfiles', '--pemfilesname', 'fms',
     '--accepttos'
 )
-# Ohne Adresse legt win-acme das Konto bei Let's Encrypt ohne Kontakt an.
 if ($AcmeEmail) { $wacsBasis += '--emailaddress', $AcmeEmail }
+# Ohne Adresse fragt win-acme beim Anlegen des Kontos trotzdem danach (einmal pro Server und
+# Let's-Encrypt-Umgebung). Deshalb bekommt es unten per '' | ein leeres Enter mit: Das Konto
+# entsteht dann ohne Kontakt. Let's Encrypt verschickt seit 06/2025 ohnehin keine Ablaufwarnungen.
 
 # ======================================================================
 if ($Modus -eq 'Staging') {
@@ -387,7 +389,7 @@ if ($Modus -eq 'Staging') {
 # ======================================================================
     $pem = "$hgiOrdner\pem-staging"
     New-Item -ItemType Directory -Force $pem | Out-Null   # win-acme legt den Ordner nicht selbst an
-    & $wacs @wacsBasis --friendlyname "$name (Staging)" --pemfilespath $pem `
+    '' | & $wacs @wacsBasis --friendlyname "$name (Staging)" --pemfilespath $pem `
         --baseuri $stagingUri --installation none --notaskscheduler
     $rc = $LASTEXITCODE
     # Die Staging-Erneuerung wird nicht gebraucht, sonst würde win-acme sie weiter erneuern.
@@ -430,7 +432,7 @@ if ($vorhanden) {
 }
 
 $start = Get-Date
-& $wacs @wacsBasis --friendlyname $name --pemfilespath $pem --baseuri $prodUri `
+'' | & $wacs @wacsBasis --friendlyname $name --pemfilespath $pem --baseuri $prodUri `
     --installation script --script "$hgiOrdner\FMS-Zertifikat-Import.ps1" `
     --scriptparameters "-CertFile '$pem\fms-crt.pem' -KeyFile '$pem\fms-key.pem' -ChainFile '$pem\fms-chain-only.pem' -Domain '$Domain'"
 $rc = $LASTEXITCODE
