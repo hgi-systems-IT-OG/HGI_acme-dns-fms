@@ -21,7 +21,7 @@
     12  Domain nicht im Zertifikat      13  Zertifikat abgelaufen / läuft binnen 24 h ab
     14  fmsadmin-Zugang fehlgeschlagen
     20  Import fehlgeschlagen           (kein Neustart)
-    30  Datenbanken nicht geschlossen   (kein Neustart, Datenbanken wieder geöffnet)
+    30  Schließen nicht bestätigt       (kein Neustart, Datenbanken wieder geöffnet)
     40  Dienst-Neustart fehlgeschlagen
     50  Server nach Neustart nicht erreichbar oder Datenbanken nicht offen
     51  Server liefert nicht das neue Zertifikat aus
@@ -119,17 +119,22 @@ Log "Schließe Datenbanken, Vorwarnung $CloseWarnSec s"
 Invoke-Fms close -y -t $CloseWarnSec -m "Wartung: Der Server startet in $CloseWarnSec Sekunden kurz neu." | Out-Null
 
 # ===== 4. Warten, bis ALLE zu sind =====
+# Eine leere Liste zählt nur, wenn fmsadmin sie ohne Fehler geliefert hat. Schlägt die Abfrage
+# fehl, ist nichts bestätigt und es wird weiter gewartet.
 $deadline = (Get-Date).AddSeconds($CloseWarnSec).AddMinutes($CloseTimeoutMin)
 do {
     Start-Sleep -Seconds 10
-    $open = Get-OpenFiles
-    Log "Noch offen: $($open.Count)"
-} while ($open.Count -gt 0 -and (Get-Date) -lt $deadline)
+    $open      = Get-OpenFiles
+    $abfrageOk = $LASTEXITCODE -eq 0
+    if ($abfrageOk) { Log "Noch offen: $($open.Count)" }
+    else            { Log "Abfrage der offenen Datenbanken fehlgeschlagen (ExitCode $LASTEXITCODE) - zählt als noch offen" }
+} while ((-not $abfrageOk -or $open.Count -gt 0) -and (Get-Date) -lt $deadline)
 
-if ($open.Count -gt 0) {
+if (-not $abfrageOk -or $open.Count -gt 0) {
     Log 'Timeout - öffne alle Datenbanken wieder'
     Invoke-Fms open -y | Out-Null
-    Fail ("Datenbanken nicht geschlossen: " + ($open -join ', ') + " - KEIN Neustart. Zertifikat ist importiert, aber erst nach einem Neustart aktiv.") 30
+    $grund = if ($abfrageOk) { 'Datenbanken nicht geschlossen: ' + ($open -join ', ') } else { 'Schließen nicht bestätigt (fmsadmin list files fehlgeschlagen)' }
+    Fail "$grund - KEIN Neustart. Zertifikat ist importiert, aber erst nach einem Neustart aktiv." 30
 }
 
 # ===== 5. Dienst neu starten =====
