@@ -46,7 +46,7 @@
 #Requires -RunAsAdministrator
 param(
     [Parameter(Mandatory)] [ValidateSet('Pruefen', 'Staging', 'Produktiv', 'Aktualisieren')] [string]$Modus,
-    [string]  $AcmeEmail      = '',              # TODO: Adresse von hgi für das Let's-Encrypt-Konto (Ablaufwarnungen)
+    [string]  $AcmeEmail      = '',              # optional: Let's Encrypt verschickt seit 06/2025 keine Ablaufwarnungen mehr
     [string]  $Uhrzeit        = '03:00:00',
     [string]  $WinAcmeOrdner  = 'C:\Program Files\win-acme',
     [string]  $SmtpServer,                       # Fehlermail von win-acme (optional)
@@ -343,8 +343,6 @@ if (-not $caaGeprueft) { Ok 'Kein CAA-Eintrag, alle Aussteller erlaubt' }
 
 if ($Modus -eq 'Pruefen') { Ende 'Prüfung abgeschlossen. An FileMaker Server und win-acme wurde nichts geändert.' }
 
-if (-not $AcmeEmail) { Abbruch 'Adresse für das Let''s-Encrypt-Konto fehlt (-AcmeEmail bzw. Vorgabe im Skript)' }
-
 # ======================================================================
 Schritt 'DNS-Kette testen (ohne Let''s Encrypt)'
 # ======================================================================
@@ -378,8 +376,10 @@ $wacsBasis = @(
     '--dnscreatescriptarguments', 'create {RecordName} {Token}',
     '--dnsdeletescriptarguments', 'delete {RecordName} {Token}',
     '--store', 'pemfiles', '--pemfilesname', 'fms',
-    '--accepttos', '--emailaddress', $AcmeEmail
+    '--accepttos'
 )
+# Ohne Adresse legt win-acme das Konto bei Let's Encrypt ohne Kontakt an.
+if ($AcmeEmail) { $wacsBasis += '--emailaddress', $AcmeEmail }
 
 # ======================================================================
 if ($Modus -eq 'Staging') {
