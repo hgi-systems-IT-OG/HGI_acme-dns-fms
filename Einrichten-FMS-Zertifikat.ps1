@@ -386,6 +386,7 @@ if ($Modus -eq 'Staging') {
     Schritt 'Test-Zertifikat von Let''s Encrypt (Staging)'
 # ======================================================================
     $pem = "$hgiOrdner\pem-staging"
+    New-Item -ItemType Directory -Force $pem | Out-Null   # win-acme legt den Ordner nicht selbst an
     & $wacs @wacsBasis --friendlyname "$name (Staging)" --pemfilespath $pem `
         --baseuri $stagingUri --installation none --notaskscheduler
     $rc = $LASTEXITCODE
@@ -409,6 +410,7 @@ Schritt 'Zertifikat von Let''s Encrypt (produktiv)'
 # ======================================================================
 
 $pem = "$hgiOrdner\pem"
+New-Item -ItemType Directory -Force $pem | Out-Null   # win-acme legt den Ordner nicht selbst an
 $renewalOrdner = Join-Path $env:ProgramData 'win-acme\acme-v02.api.letsencrypt.org'
 $vorhanden = Get-ChildItem "$renewalOrdner\*.renewal.json" -ErrorAction SilentlyContinue |
     Where-Object { (Get-Content $_.FullName -Raw) -match [regex]::Escape($Domain) }
