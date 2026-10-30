@@ -21,7 +21,8 @@
                   Versionen. Legt nur den hgi-Ordner mit dem Token an und installiert die
                   1Password CLI; an FileMaker Server und win-acme ändert es nichts.
     Staging       Richtet alles ein und holt ein TEST-Zertifikat von Let's Encrypt (Staging).
-                  Kein Import, kein Neustart, kein Zeitplan. Danach Import-Skript als Dry-Run.
+                  Kein Import, kein Neustart, kein Zeitplan. Danach Import-Skript als Dry-Run,
+                  einmal als Administrator und einmal als SYSTEM (wie die geplante Aufgabe).
     Produktiv     Holt das echte Zertifikat, importiert es SOFORT (Datenbanken werden geschlossen,
                   FileMaker Server startet neu) und legt den täglichen Zeitplan an.
     Aktualisieren Bringt nur Skripte, win-acme und 1Password CLI auf den neuesten Stand.
@@ -35,6 +36,7 @@
       DNS-Eintrag.ps1                  schickt den Prüfwert an den hgi-DNS-Dienst
       FMS-Zertifikat-Import.ps1        Import, Schließen, Neustart, Prüfen
       Zugang.ps1                       liest die Zugänge aus 1Password
+      Systemtest.ps1                   Erneuerung ohne Änderung als SYSTEM durchspielen (Staging)
       zugang.json                      Environment-ID und Token (DPAPI-verschlüsselt)
       pem\                             das aktuelle Zertifikat als PEM-Dateien
       Logs\
@@ -124,7 +126,7 @@ if (Get-ChildItem $hgiOrdner -Force) {
     if ($LASTEXITCODE -ne 0) { Abbruch "Rechte im Ordner $hgiOrdner nicht zurückgesetzt (icacls $LASTEXITCODE)" }
 }
 
-foreach ($datei in 'Zugang.ps1', 'DNS-Eintrag.ps1', 'FMS-Zertifikat-Import.ps1') {
+foreach ($datei in 'Zugang.ps1', 'DNS-Eintrag.ps1', 'FMS-Zertifikat-Import.ps1', 'Systemtest.ps1') {
     Copy-Item (Join-Path $PSScriptRoot $datei) $hgiOrdner -Force
 }
 Ok 'Skripte kopiert, Zugriff nur SYSTEM und Administratoren'
@@ -402,6 +404,31 @@ if ($Modus -eq 'Staging') {
         -CertFile "$pem\fms-crt.pem" -KeyFile "$pem\fms-key.pem" -ChainFile "$pem\fms-chain-only.pem"
     if ($LASTEXITCODE -ne 0) { Abbruch "Dry-Run des Import-Skripts fehlgeschlagen (Exit-Code $LASTEXITCODE)" }
     Ok 'Import-Skript: Dateien, Schlüssel, Domain und Admin-Zugang in Ordnung'
+
+    Schritt 'Erneuerung als SYSTEM (wie die geplante Aufgabe)'
+    # Die geplante Aufgabe läuft als SYSTEM, diese Einrichtung als angemeldeter Administrator.
+    # Eine kurzlebige Aufgabe startet Systemtest.ps1 als SYSTEM: 1Password lesen, DNS-Eintrag
+    # setzen und entfernen, Import als Dry-Run. An FileMaker Server ändert das nichts.
+    $testAufgabe  = 'hgi Zertifikat Systemtest'
+    $testErgebnis = "$hgiOrdner\Logs\systemtest.json"
+    Remove-Item $testErgebnis -ErrorAction SilentlyContinue
+    $aktion = New-ScheduledTaskAction powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$hgiOrdner\Systemtest.ps1`" -Pem `"$pem`""
+    Register-ScheduledTask $testAufgabe -User SYSTEM -RunLevel Highest -Action $aktion -Force | Out-Null
+    Start-ScheduledTask $testAufgabe
+    $bis = (Get-Date).AddMinutes(5)
+    do { Start-Sleep -Seconds 3 } while (((-not (Test-Path $testErgebnis)) -or (Get-ScheduledTask $testAufgabe).State -eq 'Running') -and (Get-Date) -lt $bis)
+    Stop-ScheduledTask $testAufgabe -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask $testAufgabe -Confirm:$false
+
+    if (-not (Test-Path $testErgebnis)) { Abbruch 'Test als SYSTEM hat nach 5 Min. kein Ergebnis geliefert' }
+    $test = Get-Content $testErgebnis -Raw | ConvertFrom-Json
+    if (-not $test.AlsSystem) { Abbruch 'Test lief nicht als SYSTEM' }
+    if ($test.Fehler)         { Abbruch "Als SYSTEM: $($test.Fehler)" }
+    if ($test.DnsAnlegen -ne 0 -or $test.DnsEntfernen -ne 0) {
+        Abbruch "Als SYSTEM: DNS-Eintrag fehlgeschlagen (anlegen $($test.DnsAnlegen), entfernen $($test.DnsEntfernen)), siehe $hgiOrdner\Logs\dns-eintrag.log"
+    }
+    if ($test.ImportDryRun -ne 0) { Abbruch "Als SYSTEM: Dry-Run des Import-Skripts fehlgeschlagen (Exit-Code $($test.ImportDryRun)), siehe $hgiOrdner\Logs\fms-zertifikat.log" }
+    Ok 'Als SYSTEM: 1Password, DNS-Dienst und Import-Dry-Run in Ordnung'
 
     Remove-Item -Recurse -Force $pem
     Ende 'Staging erfolgreich. Nächster Schritt: Produktiv in einem Wartungsfenster.'

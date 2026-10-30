@@ -17,7 +17,7 @@ Das Skript fragt nach dem Modus und beim ersten Lauf nach dem Token des 1Passwor
 | Modus | Was passiert |
 |---|---|
 | 1 Pruefen | Prüft 1Password, Anmeldung an der Admin Console, CNAME, CAA, Versionen. Legt nur `C:\ProgramData\hgi\Zertifikat` mit `zugang.json` an und installiert die 1Password CLI. An FileMaker Server und win-acme ändert sich nichts. |
-| 2 Staging | Richtet alles ein und holt ein **Test**-Zertifikat. Kein Import, kein Neustart, kein Zeitplan. |
+| 2 Staging | Richtet alles ein und holt ein **Test**-Zertifikat. Kein Import, kein Neustart, kein Zeitplan. Spielt danach die Erneuerung als SYSTEM durch (wie die geplante Aufgabe), ebenfalls ohne Änderung. |
 | 3 Produktiv | Holt das echte Zertifikat, **schließt die Datenbanken und startet FileMaker Server sofort neu**, legt den Zeitplan an. Nur im Wartungsfenster. |
 | 4 Aktualisieren | Bringt Skripte, win-acme und 1Password CLI auf den neuesten Stand. Kein neues Zertifikat, kein Neustart. |
 
@@ -58,6 +58,7 @@ Außer dem Token liegt kein Geheimnis auf dem Server. Passwort und Schlüssel we
 | `DNS-Eintrag.ps1` | von win-acme aufgerufen: Prüfwert über den DNS-Dienst setzen und entfernen |
 | `FMS-Zertifikat-Import.ps1` | von win-acme aufgerufen: prüfen, importieren, Datenbanken schließen, nur bei Erfolg neu starten, prüfen |
 | `Zugang.ps1` | liest die Zugänge aus dem 1Password-Environment (`op run --environment`) |
+| `Systemtest.ps1` | spielt die Erneuerung ohne Änderung durch: 1Password, DNS-Eintrag, Import als Dry-Run (im Modus Staging als SYSTEM) |
 
 ## Releases
 
