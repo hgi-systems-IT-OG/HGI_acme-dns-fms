@@ -12,6 +12,8 @@ In einer PowerShell **als Administrator** auf dem FileMaker Server:
 [Net.ServicePointManager]::SecurityProtocol='Tls12'; irm https://github.com/hgi-systems-IT-OG/HGI_acme-dns-fms/releases/latest/download/Installieren.ps1 | iex
 ```
 
+Für FileMaker Server am Mac siehe [macos/README.md](macos/README.md).
+
 Das Skript fragt nach dem Modus und beim ersten Lauf nach dem Token des 1Password Service Accounts und der ID des Environments. Alles andere liest es aus 1Password.
 
 | Modus | Was passiert |
