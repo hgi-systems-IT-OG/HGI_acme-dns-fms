@@ -311,6 +311,9 @@ if ($einrichtung.Secondary -and $einrichtung.Domain -notin $einrichtung.Secondar
 $Domain    = $einrichtung.Domain
 $CnameZiel = $einrichtung.CnameZiel
 if (-not $Domain) { Abbruch 'FMS_DOMAIN im Environment ist leer' }
+# Ein Wildcard (*.kunde.at) wird über _acme-challenge.kunde.at bestätigt, CAA gilt ab kunde.at
+if ($Domain -match '\*' -and $Domain -notmatch '^\*\.[^*]+\.[^*]+$') { Abbruch "Ungültiger Name $Domain - Wildcard nur als *.kunde.at" }
+$Basis = $Domain -replace '^\*\.', ''
 Ok "Domain $Domain$(if ($einrichtung.Secondary) { ' (Secondary)' } elseif ($einrichtung.Secondaries) { ' (Primary)' })$(if ($CnameZiel) { ", CNAME-Ziel $CnameZiel" } else { ', ohne CNAME' })"
 $name = "FMS $Domain"   # Name der Erneuerung in win-acme
 
@@ -338,24 +341,24 @@ Schritt "DNS beim Kunden - $Domain"
 # ======================================================================
 
 # Hierhin schreibt der DNS-Dienst den Prüfwert: das CNAME-Ziel, sonst direkt unter der Domain.
-$txtName = if ($CnameZiel) { $CnameZiel } else { "_acme-challenge.$Domain" }
+$txtName = if ($CnameZiel) { $CnameZiel } else { "_acme-challenge.$Basis" }
 if ($txtName -notlike '_acme-challenge.*') { Abbruch "CNAME-Ziel muss mit _acme-challenge. beginnen ($CnameZiel)" }
 
-$cname = Get-DnsAntwort "_acme-challenge.$Domain" 'CNAME' | Where-Object type -eq 5 | Select-Object -First 1
+$cname = Get-DnsAntwort "_acme-challenge.$Basis" 'CNAME' | Where-Object type -eq 5 | Select-Object -First 1
 $cnameIst = if ($cname) { $cname.data.TrimEnd('.') }
 if ($CnameZiel) {
-    if (-not $cname)              { Abbruch "Kein CNAME für _acme-challenge.$Domain - beim DNS-Anbieter des Kunden eintragen: -> $CnameZiel" }
+    if (-not $cname)              { Abbruch "Kein CNAME für _acme-challenge.$Basis - beim DNS-Anbieter des Kunden eintragen: -> $CnameZiel" }
     if ($cnameIst -ne $CnameZiel) { Abbruch "CNAME zeigt auf $cnameIst statt auf $CnameZiel" }
-    Ok "CNAME _acme-challenge.$Domain -> $CnameZiel"
+    Ok "CNAME _acme-challenge.$Basis -> $CnameZiel"
 } else {
-    if ($cname) { Abbruch "Es gibt einen CNAME _acme-challenge.$Domain -> $cnameIst, dann im Environment als FMS_CNAME_TARGET eintragen" }
-    Ok "Kein CNAME, der DNS-Dienst schreibt direkt unter _acme-challenge.$Domain"
+    if ($cname) { Abbruch "Es gibt einen CNAME _acme-challenge.$Basis -> $cnameIst, dann im Environment als FMS_CNAME_TARGET eintragen" }
+    Ok "Kein CNAME, der DNS-Dienst schreibt direkt unter _acme-challenge.$Basis"
 }
 
 # --- CAA: darf Let's Encrypt ausstellen? ---
 # Von der Domain aufwärts (fm.kunde.at, kunde.at). Die erste Ebene mit CAA-Einträgen entscheidet.
 # Manche Antworten kommen als Hex ("\# 22 00 05 69 73 73 75 65 ..."), deshalb auch Hex vergleichen.
-$teile = $Domain.Split('.')
+$teile = $Basis.Split('.')
 $caaGeprueft = $false
 for ($i = 0; $i -le $teile.Count - 2 -and -not $caaGeprueft; $i++) {
     $ebene = $teile[$i..($teile.Count - 1)] -join '.'
@@ -380,7 +383,8 @@ if ($Modus -eq 'Pruefen') { Ende 'Prüfung abgeschlossen. An FileMaker Server un
 Schritt 'DNS-Kette testen (ohne Let''s Encrypt)'
 # ======================================================================
 # Ein Zufallswert geht über den DNS-Dienst nach Cloudflare und muss dann unter
-# _acme-challenge.<Domain> sichtbar werden, gegebenenfalls über den CNAME des Kunden.
+# _acme-challenge.<Domain> sichtbar werden (bei *.kunde.at: _acme-challenge.kunde.at),
+# gegebenenfalls über den CNAME des Kunden.
 # Danach wird er wieder entfernt.
 
 $zufall = New-Object byte[] 32
@@ -394,11 +398,11 @@ $gefunden = $false
 $bis = (Get-Date).AddMinutes(2)
 while (-not $gefunden -and (Get-Date) -lt $bis) {
     Start-Sleep -Seconds 10
-    $txt = Get-DnsAntwort "_acme-challenge.$Domain" 'TXT' | Where-Object type -eq 16
+    $txt = Get-DnsAntwort "_acme-challenge.$Basis" 'TXT' | Where-Object type -eq 16
     $gefunden = [bool]($txt | Where-Object { $_.data.Trim('"') -eq $testwert })
 }
 & "$hgiOrdner\DNS-Eintrag.ps1" delete $txtName $testwert | Out-Null
-if (-not $gefunden) { Abbruch "Testwert nach 2 Min. nicht unter _acme-challenge.$Domain sichtbar" }
+if (-not $gefunden) { Abbruch "Testwert nach 2 Min. nicht unter _acme-challenge.$Basis sichtbar" }
 Ok "Testwert kommt über den DNS-Dienst an ($txtName), wieder entfernt"
 
 # Argumente, die Staging und Produktiv gemeinsam haben
@@ -472,10 +476,15 @@ Schritt 'Zertifikat von Let''s Encrypt (produktiv)'
 $pem = "$hgiOrdner\pem"
 New-Item -ItemType Directory -Force $pem | Out-Null   # win-acme legt den Ordner nicht selbst an
 $renewalOrdner = Join-Path $env:ProgramData 'win-acme\acme-v02.api.letsencrypt.org'
-$vorhanden = Get-ChildItem "$renewalOrdner\*.renewal.json" -ErrorAction SilentlyContinue |
-    Where-Object { (Get-Content $_.FullName -Raw) -match [regex]::Escape($Domain) }
+# Jede FMS-Erneuerung auf diesem Server zählt, nicht nur die mit demselben Namen: Wechselt eine
+# Secondary z. B. von app.kunde.at auf *.kunde.at, würde die alte sonst weiterlaufen und beim
+# nächsten Import das neue Zertifikat wieder ersetzen.
+$vorhanden = @(Get-ChildItem "$renewalOrdner\*.renewal.json" -ErrorAction SilentlyContinue | ForEach-Object {
+    $r = Get-Content $_.FullName -Raw | ConvertFrom-Json
+    if ($r.LastFriendlyName -like 'FMS *' -and $r.LastFriendlyName -notlike '* (Staging)') { $r }
+})
 if ($vorhanden -and -not $ErneuerungNeu) {
-    Abbruch "Für $Domain gibt es schon eine Erneuerung ($($vorhanden.Name -join ', ')). Ersetzen mit -ErneuerungNeu."
+    Abbruch "Auf diesem Server gibt es schon die Erneuerung $($vorhanden.LastFriendlyName -join ', '). Ersetzen mit -ErneuerungNeu."
 }
 
 if (-not $Ja) {
@@ -489,9 +498,10 @@ if (-not $Ja) {
     if ((Read-Host '  Fortfahren? JA eingeben') -cne 'JA') { Abbruch 'Vom Benutzer abgebrochen' }
 }
 
-if ($vorhanden) {
-    & $wacs --cancel --friendlyname $name --baseuri $prodUri | Out-Null
-    Ok 'Bisherige Erneuerung entfernt'
+foreach ($alt in $vorhanden) {
+    # Über die Id, nicht den Namen: --friendlyname ist ein Filter, in dem * als Platzhalter gilt
+    & $wacs --cancel --id $alt.Id --baseuri $prodUri | Out-Null
+    Ok "Bisherige Erneuerung '$($alt.LastFriendlyName)' entfernt"
 }
 
 $start = Get-Date

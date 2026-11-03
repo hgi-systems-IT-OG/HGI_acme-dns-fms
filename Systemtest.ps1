@@ -24,7 +24,7 @@ try {
     . "$PSScriptRoot\Zugang.ps1"
     $einrichtung = Get-Einrichtung
     # Wie im Einrichtungsskript: das CNAME-Ziel, sonst direkt unter der Domain
-    $txtName = if ($einrichtung.CnameZiel) { $einrichtung.CnameZiel } else { "_acme-challenge.$($einrichtung.Domain)" }
+    $txtName = if ($einrichtung.CnameZiel) { $einrichtung.CnameZiel } else { "_acme-challenge.$($einrichtung.Domain -replace '^\*\.', '')" }
 
     & "$PSScriptRoot\DNS-Eintrag.ps1" create $txtName systemtest | Out-Null
     $ergebnis.DnsAnlegen = $LASTEXITCODE

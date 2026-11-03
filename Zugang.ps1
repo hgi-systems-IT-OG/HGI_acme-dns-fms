@@ -9,6 +9,8 @@
       FMS_SECONDARY_DOMAINS  optional: Domains der Secondary Machines, durch Komma getrennt,
                            z. B. app.kunde.at. Jede holt ihr eigenes Zertifikat; welcher Name
                            zu einem Server gehört, steht in seiner zugang.json (Rolle, Domain).
+                           Auch ein Wildcard ist möglich (*.kunde.at), wenn auf der Secondary
+                           mehrere Namen landen. CNAME dann für _acme-challenge.kunde.at.
       FMS_CNAME_TARGET     Ziel des CNAME _acme-challenge.<FMS_DOMAIN> (leer, wenn die Domain selbst
                            in der Cloudflare-Zone von hgi liegt). Gilt auch für die Secondaries.
       FMS_ADMIN_USER       Benutzer / Passwort der Admin Console von FileMaker Server

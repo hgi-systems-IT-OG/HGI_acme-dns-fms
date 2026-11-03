@@ -15,6 +15,9 @@
 
   -Secondary für eine Secondary Machine: Dort liegen keine Datenbanken. Es wird nur importiert,
   neu gestartet und geprüft, ob 443 das neue Zertifikat ausliefert (3., 4. und das Öffnen entfallen).
+  -Domain darf ein Wildcard sein (*.kunde.at), etwa wenn auf einer Secondary mehrere Namen
+  landen. Die Prüfung "Domain im Zertifikat" kennt Wildcards für genau eine Ebene.
+
   Auf einer Secondary gibt es kein openssl.exe (FMS 26). Dann prüft das Skript mit .NET; ob der
   Schlüssel zum Zertifikat passt, prüft in dem Fall erst fmsadmin beim Import.
 
@@ -93,6 +96,23 @@ function Invoke-Fms { & $fms @args -u $admUser -p $admPw }
 function Get-OpenFiles { @(Invoke-Fms list files 2>$null) -match '\.fmp12' }
 
 Log "===== Start$(if ($DryRun) { ' (DRY-RUN)' }) - $Domain$(if ($Secondary) { ' (Secondary)' }) ====="
+
+# Steht $Domain im Zertifikat? $Namen ist der SAN-Text von openssl ("DNS:a, DNS:b") oder .NET
+# ("DNS-Name=a, ..."). Ein Wildcard *.kunde.at deckt genau eine Ebene ab: fm.kunde.at ja,
+# kunde.at und x.fm.kunde.at nicht. Ist $Domain selbst ein Wildcard, muss es genau so drinstehen.
+function Test-DomainImZertifikat([string]$Namen) {
+    foreach ($n in [regex]::Matches($Namen, '(?:DNS:|=)([^\s,]+)') | ForEach-Object { $_.Groups[1].Value }) {
+        if ($n -eq $Domain) { return $true }
+        if ($n.StartsWith('*.') -and -not $Domain.StartsWith('*.')) {
+            $teile = $Domain.Split('.', 2)
+            if ($teile.Count -eq 2 -and $teile[1] -eq $n.Substring(2)) { return $true }
+        }
+    }
+    $false
+}
+# SNI-Name für die Prüfung, ob der Server das neue Zertifikat ausliefert. Bei einem Wildcard
+# irgendein Name darunter: IIS und SkischulAssistant go wählen das Zertifikat nach Port, nicht nach Namen.
+$sniName = $Domain -replace '^\*\.', 'fms.'
 if (-not $ossl) { Log 'Kein openssl.exe, Prüfung mit .NET' }
 
 # ===== 1. Prüfen =====
@@ -106,7 +126,7 @@ if ($ossl) {
     if (-not $pubCert -or $pubCert -ne $pubKey) { Fail 'Schlüssel passt nicht zum Zertifikat' 11 }
 
     $san = (& $ossl x509 -in $CertFile -noout -ext subjectAltName 2>$null) -join ' '
-    if ($san -notmatch ('DNS:' + [regex]::Escape($Domain) + '(\s|,|$)')) { Fail "Domain $Domain nicht im Zertifikat ($san)" 12 }
+    if (-not (Test-DomainImZertifikat $san)) { Fail "Domain $Domain nicht im Zertifikat ($san)" 12 }
 
     & $ossl x509 -in $CertFile -noout -checkend 86400 | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail 'Zertifikat ist abgelaufen oder läuft binnen 24 h ab' 13 }
@@ -116,9 +136,9 @@ if ($ossl) {
     catch { Fail "Zertifikat nicht lesbar: $($_.Exception.Message)" 10 }
     $pubCert = $zert.GetPublicKeyString()
 
-    # Format() ist je nach Sprache "DNS Name=..." oder "DNS-Name=...", deshalb nur auf "=<Domain>" prüfen
+    # Format() ist je nach Sprache "DNS Name=..." oder "DNS-Name=...", deshalb nur auf "=<Name>" achten
     $san = ($zert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' } | ForEach-Object { $_.Format($false) }) -join ' '
-    if ($san -notmatch ('=' + [regex]::Escape($Domain) + '(\s|,|$)')) { Fail "Domain $Domain nicht im Zertifikat ($san)" 12 }
+    if (-not (Test-DomainImZertifikat $san)) { Fail "Domain $Domain nicht im Zertifikat ($san)" 12 }
 
     if ($zert.NotAfter -lt (Get-Date).AddDays(1)) { Fail 'Zertifikat ist abgelaufen oder läuft binnen 24 h ab' 13 }
     Log "Zertifikat OK: $($zert.Subject), gültig bis $($zert.NotAfter.ToString('yyyy-MM-dd HH:mm')). Schlüssel prüft fmsadmin beim Import."
@@ -233,7 +253,7 @@ if ($rc -ne 0) { Fail "Import fehlgeschlagen (ExitCode $rc) - KEIN Neustart" 20 
 # Liefert der Server auf $Port das Zertifikat mit diesem öffentlichen Schlüssel aus?
 function Test-Ausgeliefert([int]$Port = 443) {
     if ($ossl) {
-        $served = ($null | & $ossl s_client -connect "127.0.0.1:$Port" -servername $Domain 2>$null | & $ossl x509 -noout -pubkey 2>$null) -join ''
+        $served = ($null | & $ossl s_client -connect "127.0.0.1:$Port" -servername $sniName 2>$null | & $ossl x509 -noout -pubkey 2>$null) -join ''
         return $served -eq $pubCert
     }
     # Ohne openssl: TLS-Verbindung mit SNI, das ausgelieferte Zertifikat nur ansehen, nicht prüfen
@@ -241,7 +261,7 @@ function Test-Ausgeliefert([int]$Port = 443) {
     try {
         $tcp = New-Object Net.Sockets.TcpClient '127.0.0.1', $Port
         $ssl = New-Object Net.Security.SslStream $tcp.GetStream(), $false, ([Net.Security.RemoteCertificateValidationCallback] { $true })
-        $ssl.AuthenticateAsClient($Domain, $null, [Security.Authentication.SslProtocols]::Tls12, $false)
+        $ssl.AuthenticateAsClient($sniName, $null, [Security.Authentication.SslProtocols]::Tls12, $false)
         $served = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $ssl.RemoteCertificate
         $served.GetPublicKeyString() -eq $pubCert
     } catch {

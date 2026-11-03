@@ -51,6 +51,8 @@ Bei FileMaker Server mit Secondary Machines (z. B. für WebDirect) braucht jede 
 - Auf jeder Maschine die Einrichtung mit demselben Token und derselben Environment-ID starten. Sie fragt einmal, für welchen Namen dieser Server ist (`-MaschineNeu` fragt neu).
 - Auf einer Secondary wird ohne Datenbanken importiert: Import, Neustart, Prüfung auf 443.
 
+**Wildcard:** Landen auf einer Secondary mehrere Namen (z. B. WebDirect und weitere Apps), in `FMS_SECONDARY_DOMAINS` statt des Namens ein Wildcard eintragen, z. B. `*.kunde.at`. Es deckt genau eine Ebene ab (`app.kunde.at`, nicht `kunde.at`). Der CNAME heißt dann `_acme-challenge.kunde.at` (ohne Stern), gleiches Ziel. Wechselt eine bestehende Secondary auf das Wildcard: Einrichtung mit `-MaschineNeu -ErneuerungNeu`, die alte Erneuerung wird dabei entfernt.
+
 Auf einer Secondary mit IIS legt `fmsadmin certificate import` das Zertifikat selbst in **Computerzertifikate → Eigene Zertifikate** ab und bindet es an die Site FMWebSite. Ein openssl.exe gibt es dort nicht, das Import-Skript prüft dann mit .NET.
 
 ## SkischulAssistant go
