@@ -18,6 +18,10 @@
   Auf einer Secondary gibt es kein openssl.exe (FMS 26). Dann prüft das Skript mit .NET; ob der
   Schlüssel zum Zertifikat passt, prüft in dem Fall erst fmsadmin beim Import.
 
+  Läuft auf dem Server die App "SkischulAssistant go" (Dienst mit SkischulAssistantGo.exe), wird
+  sie danach mitgezogen: Zertifikatsname in appsettings.json auf die Domain, ältere Zertifikate mit
+  demselben Namen aus LocalMachine\My entfernen, Dienst neu starten, SslPort prüfen.
+
   -DryRun prüft nur (Dateien, Schlüssel, Zugang zu fmsadmin, offene Datenbanken) und ändert nichts.
 
   Exit-Codes:
@@ -30,6 +34,7 @@
     40  Dienst-Neustart fehlgeschlagen
     50  Server nach Neustart nicht erreichbar oder Datenbanken nicht offen
     51  Server liefert nicht das neue Zertifikat aus
+    52  SkischulAssistant go nicht umgestellt (FileMaker Server ist zu dem Zeitpunkt schon fertig)
 
   Zugangsdaten der Admin Console: liegen im 1Password-Environment des Kunden und werden bei jedem Lauf
   frisch gelesen, siehe Zugang.ps1. Ist 1Password nicht erreichbar, endet der Lauf mit 14, bevor
@@ -126,6 +131,88 @@ if (-not $Secondary) {
     Log "Offene Datenbanken: $($open.Count)"
 }
 
+# ===== SkischulAssistant go =====
+# Die App (Windows-Dienst mit SkischulAssistantGo.exe) holt ihr Zertifikat nur beim Start per Name
+# aus LocalMachine\My: appsettings.json, Service.PublicOptions mit IdentifierType FindBySubjectName.
+# Nach dem Import: Namen auf $Domain stellen, ältere Zertifikate mit demselben Namen entfernen
+# (sonst findet die Suche nach Namen womöglich das alte) und den Dienst neu starten.
+# Läuft die App auf diesem Server nicht, passiert nichts.
+function Update-SsaGo([switch]$NurPruefen) {
+    $dienst = Get-CimInstance Win32_Service | Where-Object PathName -match 'SkischulAssistantGo\.exe' | Select-Object -First 1
+    if (-not $dienst) { return }
+    $exe   = [regex]::Match($dienst.PathName, '^"?([^"]+?\.exe)').Groups[1].Value
+    $datei = Join-Path (Split-Path $exe) 'appsettings.json'
+    if (-not (Test-Path $datei)) { Fail "SkischulAssistant go: $datei fehlt" 52 }
+
+    # Als Text bearbeiten: appsettings.json enthält Kommentare, ConvertFrom-Json (PS 5.1) scheitert daran
+    $text  = [IO.File]::ReadAllText($datei)
+    $block = [regex]::Match($text, '"PublicOptions"\s*:\s*\{[^}]*\}')
+    if (-not $block.Success -or $block.Value -notmatch '"Enabled"\s*:\s*true' -or
+        $block.Value -notmatch '"IdentifierType"\s*:\s*"FindBySubjectName"') {
+        Log "SkischulAssistant go ('$($dienst.Name)'): PublicOptions nicht mit FindBySubjectName aktiv - nichts angepasst"
+        return
+    }
+    $ist  = [regex]::Match($block.Value, '"Identifier"\s*:\s*"([^"]*)"').Groups[1].Value
+    $port = [regex]::Match($text, '"SslPort"\s*:\s*(\d+)').Groups[1].Value
+
+    if ($NurPruefen) {
+        Log ("DRY-RUN: SkischulAssistant go ('$($dienst.Name)', SslPort $port): Identifier '$ist'" +
+             $(if ($ist -ne $Domain) { " würde auf '$Domain' gestellt" } else { ' passt' }) + ', Dienst würde neu gestartet.')
+        return
+    }
+
+    # Das neue Zertifikat muss in LocalMachine\My liegen. Auf einer Secondary (IIS) legt fmsadmin es
+    # dort selbst ab, sonst hier aus den PEM-Dateien importieren.
+    $neu = (New-Object Security.Cryptography.X509Certificates.X509Certificate2 $CertFile).Thumbprint
+    if (-not (Test-Path "Cert:\LocalMachine\My\$neu")) {
+        if (-not $ossl) { Fail "SkischulAssistant go: Zertifikat $neu nicht in LocalMachine\My, ohne openssl kein Import möglich" 52 }
+        $pfx = Join-Path $env:TEMP "hgi-zertifikat-$([guid]::NewGuid()).pfx"
+        $pw  = [guid]::NewGuid().ToString('N')
+        try {
+            # 3DES statt AES, damit auch ältere Windows-Versionen die PFX lesen
+            & $ossl pkcs12 -export -in $CertFile -inkey $KeyFile -certfile $ChainFile -out $pfx -passout "pass:$pw" `
+                -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 2>$null
+            Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\LocalMachine\My `
+                -Password (ConvertTo-SecureString $pw -AsPlainText -Force) | Out-Null
+        } catch {
+            Fail "SkischulAssistant go: Import nach LocalMachine\My fehlgeschlagen: $($_.Exception.Message)" 52
+        } finally {
+            Remove-Item $pfx -ErrorAction SilentlyContinue
+        }
+        Log "Zertifikat $neu nach LocalMachine\My importiert"
+    }
+
+    # Ältere mit demselben Namen entfernen, aber keines, das noch in http.sys (IIS) gebunden ist
+    $gebunden = @(netsh http show sslcert) -match '[0-9a-fA-F]{40}' | ForEach-Object { ($_ -split ':\s*')[-1].Trim() }
+    foreach ($alt in Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -eq "CN=$Domain" -and $_.Thumbprint -ne $neu }) {
+        if ($gebunden -contains $alt.Thumbprint) { Log "HINWEIS: altes Zertifikat $($alt.Thumbprint) ist noch in http.sys gebunden, bleibt"; continue }
+        Remove-Item $alt.PSPath
+        Log "Altes Zertifikat $($alt.Thumbprint) (bis $($alt.NotAfter.ToString('yyyy-MM-dd'))) entfernt"
+    }
+
+    if ($ist -ne $Domain) {
+        Copy-Item $datei "$datei.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        $neuBlock = [regex]::Replace($block.Value, '("Identifier"\s*:\s*")[^"]*(")', ('${1}' + $Domain + '${2}'))
+        $text = $text.Substring(0, $block.Index) + $neuBlock + $text.Substring($block.Index + $block.Length)
+        [IO.File]::WriteAllText($datei, $text, (New-Object Text.UTF8Encoding $false))
+        Log "SkischulAssistant go: Identifier '$ist' -> '$Domain' (Sicherung neben appsettings.json)"
+    }
+
+    Log "Starte '$($dienst.Name)' neu"
+    try {
+        Restart-Service -Name $dienst.Name -ErrorAction Stop -WarningAction SilentlyContinue
+    } catch {
+        Fail "SkischulAssistant go: Neustart fehlgeschlagen: $($_.Exception.Message)" 52
+    }
+    if ($port) {
+        $deadline = (Get-Date).AddMinutes(2)
+        do { Start-Sleep -Seconds 5 } while (-not (Test-Ausgeliefert $port) -and (Get-Date) -lt $deadline)
+        if (-not (Test-Ausgeliefert $port)) { Fail "SkischulAssistant go liefert auf $port nicht das neue Zertifikat aus" 52 }
+        Log "SkischulAssistant go liefert auf $port das neue Zertifikat aus"
+    }
+}
+
+if ($DryRun) { Update-SsaGo -NurPruefen }
 if ($DryRun -and $Secondary) {
     Log "DRY-RUN: würde importieren und '$svc' neu starten (Secondary, keine Datenbanken)."
     Log '===== Ende (DRY-RUN, nichts geändert) ====='
@@ -143,16 +230,16 @@ $rc  = $LASTEXITCODE
 Log ("fmsadmin certificate import: " + (($out | ForEach-Object { "$_" }) -join ' | '))
 if ($rc -ne 0) { Fail "Import fehlgeschlagen (ExitCode $rc) - KEIN Neustart" 20 }
 
-# Liefert der Server auf 443 das Zertifikat mit diesem öffentlichen Schlüssel aus?
-function Test-Ausgeliefert {
+# Liefert der Server auf $Port das Zertifikat mit diesem öffentlichen Schlüssel aus?
+function Test-Ausgeliefert([int]$Port = 443) {
     if ($ossl) {
-        $served = ($null | & $ossl s_client -connect 127.0.0.1:443 -servername $Domain 2>$null | & $ossl x509 -noout -pubkey 2>$null) -join ''
+        $served = ($null | & $ossl s_client -connect "127.0.0.1:$Port" -servername $Domain 2>$null | & $ossl x509 -noout -pubkey 2>$null) -join ''
         return $served -eq $pubCert
     }
     # Ohne openssl: TLS-Verbindung mit SNI, das ausgelieferte Zertifikat nur ansehen, nicht prüfen
     $tcp = $null
     try {
-        $tcp = New-Object Net.Sockets.TcpClient '127.0.0.1', 443
+        $tcp = New-Object Net.Sockets.TcpClient '127.0.0.1', $Port
         $ssl = New-Object Net.Security.SslStream $tcp.GetStream(), $false, ([Net.Security.RemoteCertificateValidationCallback] { $true })
         $ssl.AuthenticateAsClient($Domain, $null, [Security.Authentication.SslProtocols]::Tls12, $false)
         $served = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $ssl.RemoteCertificate
@@ -176,6 +263,7 @@ if ($Secondary) {
     do { Start-Sleep -Seconds 10 } while (-not (Test-Ausgeliefert) -and (Get-Date) -lt $deadline)
     if (-not (Test-Ausgeliefert)) { Fail "Server liefert $StartTimeoutMin Min. nach dem Neustart auf 443 nicht das neue Zertifikat aus" 51 }
     Log 'Server liefert das neue Zertifikat aus'
+    Update-SsaGo
     Log '===== Ende OK ====='
     exit 0
 }
@@ -231,6 +319,7 @@ Log "Offene Datenbanken: $($open.Count)"
 
 if (-not (Test-Ausgeliefert)) { Fail 'Server liefert auf 443 nicht das neue Zertifikat aus' 51 }
 Log 'Server liefert das neue Zertifikat aus'
+Update-SsaGo
 
 Log '===== Ende OK ====='
 exit 0

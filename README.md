@@ -51,7 +51,16 @@ Bei FileMaker Server mit Secondary Machines (z. B. für WebDirect) braucht jede 
 - Auf jeder Maschine die Einrichtung mit demselben Token und derselben Environment-ID starten. Sie fragt einmal, für welchen Namen dieser Server ist (`-MaschineNeu` fragt neu).
 - Auf einer Secondary wird ohne Datenbanken importiert: Import, Neustart, Prüfung auf 443.
 
-Noch an keiner echten Secondary getestet: dort zuerst Pruefen, dann Staging.
+Auf einer Secondary mit IIS legt `fmsadmin certificate import` das Zertifikat selbst in **Computerzertifikate → Eigene Zertifikate** ab und bindet es an die Site FMWebSite. Ein openssl.exe gibt es dort nicht, das Import-Skript prüft dann mit .NET.
+
+## SkischulAssistant go
+
+Läuft auf dem Server die App „SkischulAssistant go“ (Dienst mit `SkischulAssistantGo.exe`), zieht das Import-Skript sie nach jedem Import mit. Die App lädt ihr Zertifikat nur beim Start und sucht es per Name in Eigene Zertifikate (`appsettings.json`, `Service.PublicOptions`, `FindBySubjectName`). Das Skript
+
+- stellt `Identifier` auf die Domain dieses Servers (Sicherung `appsettings.json.bak-<Zeit>`),
+- legt das Zertifikat dort ab, falls fmsadmin es nicht schon getan hat (braucht openssl),
+- entfernt ältere Zertifikate mit demselben Namen, außer sie sind noch in IIS gebunden,
+- startet den Dienst neu und prüft, ob der `SslPort` das neue Zertifikat ausliefert (sonst Exit-Code 52).
 
 ## Was auf dem Server liegt
 
