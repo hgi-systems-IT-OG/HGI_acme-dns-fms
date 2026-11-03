@@ -5,9 +5,12 @@
   ". $PSScriptRoot\Zugang.ps1" eingebunden.
 
   Alles Kundenspezifische liegt in 1Password, ein Environment pro Kunde (z. B. "6819 (Willi GmbH)"):
-      FMS_DOMAIN           Domain des FileMaker Servers, z. B. fm.kunde.at
+      FMS_DOMAIN           Domain des FileMaker Servers (Primary), z. B. fm.kunde.at
+      FMS_SECONDARY_DOMAINS  optional: Domains der Secondary Machines, durch Komma getrennt,
+                           z. B. app.kunde.at. Jede holt ihr eigenes Zertifikat; welcher Name
+                           zu einem Server gehört, steht in seiner zugang.json (Rolle, Domain).
       FMS_CNAME_TARGET     Ziel des CNAME _acme-challenge.<FMS_DOMAIN> (leer, wenn die Domain selbst
-                           in der Cloudflare-Zone von hgi liegt)
+                           in der Cloudflare-Zone von hgi liegt). Gilt auch für die Secondaries.
       FMS_ADMIN_USER       Benutzer / Passwort der Admin Console von FileMaker Server
       FMS_ADMIN_PASSWORD
       ACME_DNS_URL         URL des hgi-DNS-Dienstes
@@ -17,7 +20,7 @@
   dieses Environment sieht.
 
   Auf dem Server liegt nur zugang.json mit der ID des Environments und dem Token des Service
-  Accounts. Das Token ist per DPAPI im Maschinen-Bereich verschlüsselt: Entschlüsseln kann es nur
+  Accounts, bei Primary/Secondary dazu die Rolle dieses Servers. Das Token ist per DPAPI im Maschinen-Bereich verschlüsselt: Entschlüsseln kann es nur
   ein Prozess auf DIESEM Server. Lesen dürfen die Datei nur SYSTEM und die Administratoren
   (Ordnerrechte setzt das Einrichtungsskript).
 #>
@@ -82,11 +85,18 @@ function Get-1PasswordEnvironment([string]$Pfad = $ZugangDateiVorgabe) {
     Read-1PasswordEnvironment (Unprotect-Geheimnis $zugang.Token) $zugang.Environment
 }
 
+# Domain ist der Name DIESES Servers: FMS_DOMAIN, auf einer Secondary der Name aus zugang.json.
 function Get-Einrichtung([string]$Pfad = $ZugangDateiVorgabe) {
-    $e = Get-1PasswordEnvironment $Pfad
+    $e      = Get-1PasswordEnvironment $Pfad
+    $zugang = Read-Zugang $Pfad
+    $secondary = $zugang.Rolle -eq 'Secondary'
     [pscustomobject]@{
-        Domain    = $e.FMS_DOMAIN
-        CnameZiel = $e.FMS_CNAME_TARGET
+        Domain      = if ($secondary) { $zugang.Domain } else { $e.FMS_DOMAIN }
+        CnameZiel   = $e.FMS_CNAME_TARGET
+        Secondary   = $secondary
+        Primary     = $e.FMS_DOMAIN
+        Secondaries = @("$($e.FMS_SECONDARY_DOMAINS)" -split '[,;\s]+' | Where-Object { $_ } |
+                        ForEach-Object { $_.ToLower().TrimEnd('.') })
     }
 }
 

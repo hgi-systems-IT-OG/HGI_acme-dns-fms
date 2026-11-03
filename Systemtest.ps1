@@ -31,7 +31,7 @@ try {
     & "$PSScriptRoot\DNS-Eintrag.ps1" delete $txtName systemtest | Out-Null
     $ergebnis.DnsEntfernen = $LASTEXITCODE
 
-    & "$PSScriptRoot\FMS-Zertifikat-Import.ps1" -DryRun -Domain $einrichtung.Domain `
+    & "$PSScriptRoot\FMS-Zertifikat-Import.ps1" -DryRun -Domain $einrichtung.Domain -Secondary:$einrichtung.Secondary `
         -CertFile "$Pem\fms-crt.pem" -KeyFile "$Pem\fms-key.pem" -ChainFile "$Pem\fms-chain-only.pem" | Out-Null
     $ergebnis.ImportDryRun = $LASTEXITCODE
 } catch {

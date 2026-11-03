@@ -34,12 +34,24 @@ Danach erneuert die geplante Aufgabe von win-acme täglich um 03:00, wenn das Ze
 
    | Variable | Inhalt |
    |---|---|
-   | `FMS_DOMAIN` | Domain des FileMaker Servers, z. B. `fm.kunde.at` |
+   | `FMS_DOMAIN` | Domain des FileMaker Servers (Primary), z. B. `fm.kunde.at` |
+   | `FMS_SECONDARY_DOMAINS` | optional: Domains der Secondary Machines, durch Komma getrennt, z. B. `app.kunde.at` |
    | `FMS_CNAME_TARGET` | z. B. `_acme-challenge.fm-kunde.<zone>`, leer ohne CNAME |
    | `FMS_ADMIN_USER`, `FMS_ADMIN_PASSWORD` | Anmeldung an der Admin Console |
    | `ACME_DNS_URL`, `ACME_DNS_CLIENT`, `ACME_DNS_KEY` | URL des DNS-Dienstes, Clientname, Schlüssel |
 
    Dazu ein Service Account, der **nur dieses Environment** lesen darf (keine Tresore). Die Einrichtung fragt nach seinem Token und der Environment-ID (Manage environment → Copy environment ID).
+
+## Primary und Secondary Machines
+
+Bei FileMaker Server mit Secondary Machines (z. B. für WebDirect) braucht jede Maschine ein Zertifikat für ihren eigenen Namen, FileMaker verteilt es nicht. Alles bleibt in **einem** Environment:
+
+- `FMS_SECONDARY_DOMAINS` mit den Namen der Secondaries eintragen.
+- Beim Kunden für jeden Namen denselben CNAME: `_acme-challenge.app.kunde.at  CNAME  <FMS_CNAME_TARGET>`. Am DNS-Dienst ändert sich nichts.
+- Auf jeder Maschine die Einrichtung mit demselben Token und derselben Environment-ID starten. Sie fragt einmal, für welchen Namen dieser Server ist (`-MaschineNeu` fragt neu).
+- Auf einer Secondary wird ohne Datenbanken importiert: Import, Neustart, Prüfung auf 443.
+
+Noch an keiner echten Secondary getestet: dort zuerst Pruefen, dann Staging.
 
 ## Was auf dem Server liegt
 
@@ -47,7 +59,7 @@ Danach erneuert die geplante Aufgabe von win-acme täglich um 03:00, wenn das Ze
 |---|---|
 | `C:\Program Files\win-acme` | win-acme, `settings.json` mit Zeitplan 03:00 und Skript-Timeout 30 Min. |
 | `C:\Program Files\1Password CLI` | `op.exe` (nur mit gültiger Signatur von AgileBits übernommen) |
-| `C:\ProgramData\hgi\Zertifikat` | die Skripte, `zugang.json` (Environment-ID und Token, per DPAPI an diesen Server gebunden), `pem\`, `Logs\`. Zugriff nur SYSTEM und Administratoren. |
+| `C:\ProgramData\hgi\Zertifikat` | die Skripte, `zugang.json` (Environment-ID und Token, per DPAPI an diesen Server gebunden, bei Secondaries dazu Rolle und Name), `pem\`, `Logs\`. Zugriff nur SYSTEM und Administratoren. |
 
 Außer dem Token liegt kein Geheimnis auf dem Server. Passwort und Schlüssel werden bei jedem Lauf frisch aus 1Password gelesen.
 

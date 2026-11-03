@@ -44,6 +44,11 @@
     win-acme erneuert, wenn das Zertifikat fällig ist, und ruft dann das Import-Skript auf.
 
   -ZugaengeNeu fragt Token und Environment-ID neu ab, z. B. nach einem neuen Service Account.
+
+  Primary und Secondary Machines: Steht im Environment FMS_SECONDARY_DOMAINS, fragt die
+  Einrichtung einmal, für welchen Namen dieser Server ist, und merkt sich das in zugang.json.
+  Jede Maschine holt ihr eigenes Zertifikat. Auf einer Secondary wird ohne Datenbanken
+  importiert und neu gestartet. -MaschineNeu fragt die Zuordnung neu ab.
 #>
 #Requires -RunAsAdministrator
 param(
@@ -56,6 +61,7 @@ param(
     [string]  $SmtpAbsender,
     [string[]]$SmtpEmpfaenger,
     [switch]  $ZugaengeNeu,
+    [switch]  $MaschineNeu,                      # Primary/Secondary neu zuordnen
     [switch]  $ErneuerungNeu,                    # bestehende Erneuerung für diese Domain ersetzen
     [switch]  $Ja                                # Sicherheitsabfrage im Modus Produktiv überspringen
 )
@@ -282,19 +288,44 @@ if ($ZugaengeNeu -or -not (Test-Path $zugangDatei) -or -not (Read-Zugang $zugang
 }
 
 try { $einrichtung = Get-Einrichtung $zugangDatei } catch { Abbruch $_.Exception.Message }
+
+# --- Primary oder Secondary? Nur wenn das Environment Secondaries nennt ---
+$zugang = Read-Zugang $zugangDatei
+if ($einrichtung.Secondaries -and ($MaschineNeu -or -not $zugang.Rolle)) {
+    $namen = @($einrichtung.Primary) + $einrichtung.Secondaries
+    Write-Host "`n  Für welche Maschine wird dieser Server eingerichtet?"
+    for ($i = 0; $i -lt $namen.Count; $i++) {
+        Write-Host ("  {0}  {1}  ({2})" -f ($i + 1), $namen[$i], $(if ($i -eq 0) { 'Primary' } else { 'Secondary' }))
+    }
+    $wahl = (Read-Host "`n  Nummer (1-$($namen.Count))").Trim()
+    if ($wahl -notmatch '^\d+$' -or [int]$wahl -lt 1 -or [int]$wahl -gt $namen.Count) { Abbruch "Ungültige Auswahl: '$wahl'" }
+    $neu = @{ Environment = $zugang.Environment; Token = $zugang.Token; Rolle = 'Primary' }
+    if ([int]$wahl -gt 1) { $neu.Rolle = 'Secondary'; $neu.Domain = $namen[[int]$wahl - 1] }
+    Save-Zugang $zugangDatei $neu
+    try { $einrichtung = Get-Einrichtung $zugangDatei } catch { Abbruch $_.Exception.Message }
+}
+if ($einrichtung.Secondary -and $einrichtung.Domain -notin $einrichtung.Secondaries) {
+    Abbruch "Dieser Server ist als Secondary $($einrichtung.Domain) eingerichtet, der Name steht nicht mehr in FMS_SECONDARY_DOMAINS. Mit -MaschineNeu neu zuordnen."
+}
+
 $Domain    = $einrichtung.Domain
 $CnameZiel = $einrichtung.CnameZiel
 if (-not $Domain) { Abbruch 'FMS_DOMAIN im Environment ist leer' }
-Ok "Domain $Domain$(if ($CnameZiel) { ", CNAME-Ziel $CnameZiel" } else { ', ohne CNAME' })"
+Ok "Domain $Domain$(if ($einrichtung.Secondary) { ' (Secondary)' } elseif ($einrichtung.Secondaries) { ' (Primary)' })$(if ($CnameZiel) { ", CNAME-Ziel $CnameZiel" } else { ', ohne CNAME' })"
 $name = "FMS $Domain"   # Name der Erneuerung in win-acme
 
 # --- Admin Console ---
 if (-not (Test-Path $fmsadmin)) { Abbruch "FileMaker Server nicht gefunden ($fmsadmin)" }
-try { $admin = Get-FmsAdmin $zugangDatei } catch { Abbruch $_.Exception.Message }
-& $fmsadmin list files -u $admin.Benutzer -p $admin.Passwort | Out-Null
-if ($LASTEXITCODE -ne 0) { Abbruch "Anmeldung an der Admin Console mit den Daten aus 1Password fehlgeschlagen (fmsadmin $LASTEXITCODE)" }
-Ok "Admin Console: Anmeldung als $($admin.Benutzer)"
-$admin = $null
+if ($einrichtung.Secondary) {
+    # Auf einer Secondary liegen keine Datenbanken, list files sagt dort nichts über die Anmeldung
+    Hinweis 'Secondary: Anmeldung an der Admin Console wird erst beim Import geprüft'
+} else {
+    try { $admin = Get-FmsAdmin $zugangDatei } catch { Abbruch $_.Exception.Message }
+    & $fmsadmin list files -u $admin.Benutzer -p $admin.Passwort | Out-Null
+    if ($LASTEXITCODE -ne 0) { Abbruch "Anmeldung an der Admin Console mit den Daten aus 1Password fehlgeschlagen (fmsadmin $LASTEXITCODE)" }
+    Ok "Admin Console: Anmeldung als $($admin.Benutzer)"
+    $admin = $null
+}
 
 # --- DNS-Dienst (geprüft wird er im Schritt DNS-Kette) ---
 try { $dns = Get-DnsZugang $zugangDatei } catch { Abbruch $_.Exception.Message }
@@ -400,7 +431,7 @@ if ($Modus -eq 'Staging') {
     Ok 'Test-Zertifikat erhalten, DNS-01-Prüfung funktioniert'
 
     Schritt 'Import-Skript als Dry-Run (mit dem Test-Zertifikat)'
-    & "$hgiOrdner\FMS-Zertifikat-Import.ps1" -DryRun -Domain $Domain `
+    & "$hgiOrdner\FMS-Zertifikat-Import.ps1" -DryRun -Domain $Domain -Secondary:$einrichtung.Secondary `
         -CertFile "$pem\fms-crt.pem" -KeyFile "$pem\fms-key.pem" -ChainFile "$pem\fms-chain-only.pem"
     if ($LASTEXITCODE -ne 0) { Abbruch "Dry-Run des Import-Skripts fehlgeschlagen (Exit-Code $LASTEXITCODE)" }
     Ok 'Import-Skript: Dateien, Schlüssel, Domain und Admin-Zugang in Ordnung'
@@ -448,8 +479,13 @@ if ($vorhanden -and -not $ErneuerungNeu) {
 }
 
 if (-not $Ja) {
-    Write-Host "`n  Der produktive Lauf importiert das Zertifikat SOFORT: Die Datenbanken werden geschlossen" -ForegroundColor Yellow
-    Write-Host "  (Clients 60 s vorher gewarnt) und FileMaker Server startet neu." -ForegroundColor Yellow
+    if ($einrichtung.Secondary) {
+        Write-Host "`n  Der produktive Lauf importiert das Zertifikat SOFORT und startet FileMaker Server auf dieser" -ForegroundColor Yellow
+        Write-Host "  Secondary neu. WebDirect-Sitzungen auf dieser Maschine brechen dabei ab." -ForegroundColor Yellow
+    } else {
+        Write-Host "`n  Der produktive Lauf importiert das Zertifikat SOFORT: Die Datenbanken werden geschlossen" -ForegroundColor Yellow
+        Write-Host "  (Clients 60 s vorher gewarnt) und FileMaker Server startet neu." -ForegroundColor Yellow
+    }
     if ((Read-Host '  Fortfahren? JA eingeben') -cne 'JA') { Abbruch 'Vom Benutzer abgebrochen' }
 }
 
@@ -461,7 +497,7 @@ if ($vorhanden) {
 $start = Get-Date
 '' | & $wacs @wacsBasis --friendlyname $name --pemfilespath $pem --baseuri $prodUri `
     --installation script --script "$hgiOrdner\FMS-Zertifikat-Import.ps1" `
-    --scriptparameters "-CertFile '$pem\fms-crt.pem' -KeyFile '$pem\fms-key.pem' -ChainFile '$pem\fms-chain-only.pem' -Domain '$Domain'"
+    --scriptparameters "-CertFile '$pem\fms-crt.pem' -KeyFile '$pem\fms-key.pem' -ChainFile '$pem\fms-chain-only.pem' -Domain '$Domain'$(if ($einrichtung.Secondary) { ' -Secondary' })"
 $rc = $LASTEXITCODE
 if ($rc -ne 0 -or -not (Test-Path "$pem\fms-crt.pem") -or (Get-Item "$pem\fms-crt.pem").LastWriteTime -lt $start) {
     Abbruch "win-acme meldet einen Fehler ($rc). Import-Log: $hgiOrdner\Logs\fms-zertifikat.log"

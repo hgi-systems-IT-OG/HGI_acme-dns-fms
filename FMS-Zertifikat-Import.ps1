@@ -13,6 +13,9 @@
   Schlägt etwas vor dem Neustart fehl, wird NICHT neu gestartet. Wurden die Datenbanken schon
   geschlossen, werden sie wieder geöffnet.
 
+  -Secondary für eine Secondary Machine: Dort liegen keine Datenbanken. Es wird nur importiert,
+  neu gestartet und geprüft, ob 443 das neue Zertifikat ausliefert (3., 4. und das Öffnen entfallen).
+
   -DryRun prüft nur (Dateien, Schlüssel, Zugang zu fmsadmin, offene Datenbanken) und ändert nichts.
 
   Exit-Codes:
@@ -45,6 +48,7 @@ param(
     [int]   $CloseTimeoutMin = 5,    # so lange zusätzlich warten, bis alle Datenbanken zu sind
     [int]   $StartTimeoutMin = 5,    # so lange nach dem Neustart auf fmsadmin warten
     [string]$LogFile         = 'C:\ProgramData\hgi\Zertifikat\Logs\fms-zertifikat.log',
+    [switch]$Secondary,
     [switch]$DryRun
 )
 
@@ -80,7 +84,7 @@ try {
 function Invoke-Fms { & $fms @args -u $admUser -p $admPw }
 function Get-OpenFiles { @(Invoke-Fms list files 2>$null) -match '\.fmp12' }
 
-Log "===== Start$(if ($DryRun) { ' (DRY-RUN)' }) - $Domain ====="
+Log "===== Start$(if ($DryRun) { ' (DRY-RUN)' }) - $Domain$(if ($Secondary) { ' (Secondary)' }) ====="
 
 # ===== 1. Prüfen =====
 foreach ($f in $CertFile, $KeyFile, $ChainFile) {
@@ -98,10 +102,18 @@ if ($san -notmatch ('DNS:' + [regex]::Escape($Domain) + '(\s|,|$)')) { Fail "Dom
 if ($LASTEXITCODE -ne 0) { Fail 'Zertifikat ist abgelaufen oder läuft binnen 24 h ab' 13 }
 Log ("Zertifikat OK: " + ((& $ossl x509 -in $CertFile -noout -subject -enddate) -join ', '))
 
-$open = Get-OpenFiles
-if ($LASTEXITCODE -ne 0) { Fail 'fmsadmin-Zugang fehlgeschlagen (Benutzer/Passwort?)' 14 }
-Log "Offene Datenbanken: $($open.Count)"
+if (-not (Test-Path $fms)) { Fail "fmsadmin fehlt ($fms)" 14 }
+if (-not $Secondary) {
+    $open = Get-OpenFiles
+    if ($LASTEXITCODE -ne 0) { Fail 'fmsadmin-Zugang fehlgeschlagen (Benutzer/Passwort?)' 14 }
+    Log "Offene Datenbanken: $($open.Count)"
+}
 
+if ($DryRun -and $Secondary) {
+    Log "DRY-RUN: würde importieren und '$svc' neu starten (Secondary, keine Datenbanken)."
+    Log '===== Ende (DRY-RUN, nichts geändert) ====='
+    exit 0
+}
 if ($DryRun) {
     Log "DRY-RUN: würde importieren, $($open.Count) Datenbank(en) schließen (Vorwarnung $CloseWarnSec s), auf das Schließen warten und '$svc' neu starten."
     Log '===== Ende (DRY-RUN, nichts geändert) ====='
@@ -113,6 +125,28 @@ $out = Invoke-Fms certificate import $CertFile --keyfile $KeyFile --intermediate
 $rc  = $LASTEXITCODE
 Log ("fmsadmin certificate import: " + (($out | ForEach-Object { "$_" }) -join ' | '))
 if ($rc -ne 0) { Fail "Import fehlgeschlagen (ExitCode $rc) - KEIN Neustart" 20 }
+
+# Liefert der Server auf 443 das Zertifikat mit diesem öffentlichen Schlüssel aus?
+function Test-Ausgeliefert {
+    $served = ($null | & $ossl s_client -connect 127.0.0.1:443 -servername $Domain 2>$null | & $ossl x509 -noout -pubkey 2>$null) -join ''
+    $served -eq $pubCert
+}
+
+if ($Secondary) {
+    Log "Secondary - starte '$svc' neu"
+    try {
+        Restart-Service -Name $svc -ErrorAction Stop -WarningAction SilentlyContinue
+    } catch {
+        Fail "Neustart fehlgeschlagen: $($_.Exception.Message)" 40
+    }
+    # Ohne Datenbanken gibt es nichts zu zählen: warten, bis 443 das neue Zertifikat ausliefert
+    $deadline = (Get-Date).AddMinutes($StartTimeoutMin)
+    do { Start-Sleep -Seconds 10 } while (-not (Test-Ausgeliefert) -and (Get-Date) -lt $deadline)
+    if (-not (Test-Ausgeliefert)) { Fail "Server liefert $StartTimeoutMin Min. nach dem Neustart auf 443 nicht das neue Zertifikat aus" 51 }
+    Log 'Server liefert das neue Zertifikat aus'
+    Log '===== Ende OK ====='
+    exit 0
+}
 
 # ===== 3. Datenbanken schließen =====
 Log "Schließe Datenbanken, Vorwarnung $CloseWarnSec s"
@@ -163,8 +197,7 @@ if ($open.Count -eq 0) {
 if ($open.Count -eq 0) { Fail 'Nach dem Neustart ist keine Datenbank offen' 50 }
 Log "Offene Datenbanken: $($open.Count)"
 
-$served = ($null | & $ossl s_client -connect 127.0.0.1:443 -servername $Domain 2>$null | & $ossl x509 -noout -pubkey 2>$null) -join ''
-if ($served -ne $pubCert) { Fail 'Server liefert auf 443 nicht das neue Zertifikat aus' 51 }
+if (-not (Test-Ausgeliefert)) { Fail 'Server liefert auf 443 nicht das neue Zertifikat aus' 51 }
 Log 'Server liefert das neue Zertifikat aus'
 
 Log '===== Ende OK ====='
