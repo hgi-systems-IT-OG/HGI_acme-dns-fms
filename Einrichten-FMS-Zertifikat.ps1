@@ -145,10 +145,18 @@ Schritt '1Password CLI'
 # ======================================================================
 
 $opVersion = $null
-if (Test-Path $opExe) { $opVersion = [version]"$(& $opExe --version)".Trim() }
+if (Test-Path $opExe) {
+    $opRoh = "$(& $opExe --version)".Trim()
+    # Vorabversionen wie 2.34.1-beta.01 lassen sich nicht als [version] lesen und werden
+    # durch die aktuelle stabile Version ersetzt (op.exe bekommt das Token)
+    if ($opRoh -match '^\d+(\.\d+){1,3}$') { $opVersion = [version]$opRoh }
+    else { Hinweis "1Password CLI $opRoh ist keine stabile Version und wird ersetzt" }
+}
 $opNeu = $null
 try {
-    $opNeu = [version](Invoke-RestMethod -Uri 'https://app-updates.agilebits.com/check/1/0/CLI2/en/2.0.0/N' -TimeoutSec 30).version
+    $opNeuRoh = [string](Invoke-RestMethod -Uri 'https://app-updates.agilebits.com/check/1/0/CLI2/en/2.0.0/N' -TimeoutSec 30).version
+    if ($opNeuRoh -match '^\d+(\.\d+){1,3}$') { $opNeu = [version]$opNeuRoh }
+    else { Hinweis "1Password-Updateserver meldet keine stabile Version ($opNeuRoh)" }
 } catch {
     Hinweis "1Password-Updateserver nicht erreichbar: $($_.Exception.Message)"
 }
