@@ -15,6 +15,26 @@
   Kein "exit" in diesem Skript: Ueber "irm | iex" wuerde das die ganze PowerShell schliessen.
 #>
 
+function Reset-HgiKonsole {
+    # Programme wie win-acme oder die 1Password CLI koennen in der Konsole den Modus
+    # DISABLE_NEWLINE_AUTO_RETURN (0x8) stehen lassen. Dann springt eine neue Zeile nicht mehr an
+    # den Zeilenanfang, und Menue und Ausgabe erscheinen treppenartig verschoben.
+    try {
+        if (-not ('Hgi.Konsole' -as [type])) {
+            Add-Type -Namespace Hgi -Name Konsole -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@
+        }
+        $h = [Hgi.Konsole]::GetStdHandle(-11)
+        $m = [uint32]0
+        if ([Hgi.Konsole]::GetConsoleMode($h, [ref]$m) -and ($m -band 8)) {
+            [Hgi.Konsole]::SetConsoleMode($h, [uint32]($m - 8)) | Out-Null
+        }
+    } catch { }
+}
+
 function Install-HgiFmsZertifikat {
     $repo   = 'hgi-systems-IT-OG/HGI_acme-dns-fms'
     $basis  = "https://github.com/$repo/releases/latest/download"
@@ -31,6 +51,7 @@ function Install-HgiFmsZertifikat {
         return
     }
 
+    Reset-HgiKonsole
     Write-Host "`nFileMaker Server: Zertifikat ueber Let's Encrypt (hgi systems)`n" -ForegroundColor Cyan
     Write-Host '  1  Pruefen        nichts an FileMaker Server aendern, nur pruefen'
     Write-Host '  2  Staging        alles einrichten, Test-Zertifikat, kein Neustart'
@@ -62,6 +83,7 @@ function Install-HgiFmsZertifikat {
         & "$tmp\entpackt\Einrichten-FMS-Zertifikat.ps1" -Modus $modus
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        Reset-HgiKonsole
     }
 }
 
