@@ -29,7 +29,7 @@
                   Kein neues Zertifikat, kein Neustart.
 
   Was eingerichtet wird:
-    C:\Program Files\win-acme          win-acme (installiert oder auf den neuesten Stand gebracht)
+    C:\Program Files\win-acme          win-acme in der fest eingestellten Version ($WinAcmeRelease)
       settings.json                    Zeitplan $Uhrzeit, Skript-Timeout 1800 s, Fehlermail
     C:\Program Files\1Password CLI     op.exe (installiert oder auf den neuesten Stand gebracht)
     C:\ProgramData\hgi\Zertifikat      nur SYSTEM und Administratoren haben Zugriff
@@ -72,6 +72,9 @@ $ProgressPreference    = 'SilentlyContinue'   # Download sonst sehr langsam
 
 $hgiOrdner  = 'C:\ProgramData\hgi\Zertifikat'
 $wacs       = Join-Path $WinAcmeOrdner 'wacs.exe'
+# win-acme fest auf die getestete Version. Ab 2.4 (Nov. 2026) gibt es kein trimmed-Paket mehr,
+# und 2.4 ist mit unseren Skripten ungetestet. Ein Wechsel ist ein eigener Schritt mit Test.
+$WinAcmeRelease = 'v2.2.9.1701'
 $opOrdner   = 'C:\Program Files\1Password CLI'   # gleicher Pfad wie $opExe in Zugang.ps1
 $fmsadmin   = 'C:\Program Files\FileMaker\FileMaker Server\Database Server\fmsadmin.exe'
 $prodUri    = 'https://acme-v02.api.letsencrypt.org/'
@@ -190,10 +193,20 @@ if (Test-Path $wacs) {
 }
 $release = $null
 try {
-    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/win-acme/win-acme/releases/latest' -TimeoutSec 30
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/win-acme/win-acme/releases/tags/$WinAcmeRelease" -TimeoutSec 30
     $neuVersion = [version]$release.tag_name.TrimStart('v')
 } catch {
     Hinweis "GitHub nicht erreichbar, win-acme kann nicht geprüft werden: $($_.Exception.Message)"
+}
+# Nur melden, nie automatisch wechseln: eine neue Version wird erst nach Test eingestellt.
+if ($release) {
+    try {
+        $neueste = Invoke-RestMethod -Uri 'https://api.github.com/repos/win-acme/win-acme/releases/latest' -TimeoutSec 30
+        $neuesteVersion = [version]$neueste.tag_name.TrimStart('v')
+        if ($neuesteVersion -gt $neuVersion) {
+            Hinweis "win-acme $neuesteVersion ist erschienen, eingestellt ist $neuVersion (Wechsel erst nach Test)"
+        }
+    } catch { }
 }
 $wacsVeraltet = $release -and (-not $wacsVersion -or $wacsVersion -lt $neuVersion)
 
@@ -205,7 +218,7 @@ foreach ($t in $fremd) { Hinweis "Weitere win-acme-Aufgabe: '$($t.TaskName)' -> 
 if ($Modus -eq 'Pruefen') {
     # Nur berichten, nichts installieren
     if ($wacsVersion) { Ok "win-acme $wacsVersion in $WinAcmeOrdner" } else { Hinweis "win-acme nicht in $WinAcmeOrdner" }
-    if ($wacsVeraltet) { Hinweis "neuere win-acme-Version: $neuVersion" }
+    if ($wacsVeraltet) { Hinweis "win-acme wird auf $neuVersion gebracht" }
 } else {
     if ($fremd) { Abbruch 'Erst die weitere win-acme-Installation klären (siehe Hinweis oben)' }
     if (-not $release -and -not $wacsVersion) { Abbruch 'win-acme fehlt und GitHub ist nicht erreichbar' }

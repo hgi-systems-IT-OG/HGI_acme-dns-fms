@@ -21,7 +21,7 @@ Das Skript fragt nach dem Modus und beim ersten Lauf nach dem Token des 1Passwor
 | 1 Pruefen | Prüft 1Password, Anmeldung an der Admin Console, CNAME, CAA, Versionen. Legt nur `C:\ProgramData\hgi\Zertifikat` mit `zugang.json` an und installiert die 1Password CLI. An FileMaker Server und win-acme ändert sich nichts. |
 | 2 Staging | Richtet alles ein und holt ein **Test**-Zertifikat. Kein Import, kein Neustart, kein Zeitplan. Spielt danach die Erneuerung als SYSTEM durch (wie die geplante Aufgabe), ebenfalls ohne Änderung. |
 | 3 Produktiv | Holt das echte Zertifikat, **schließt die Datenbanken und startet FileMaker Server sofort neu**, legt den Zeitplan an. Nur im Wartungsfenster. |
-| 4 Aktualisieren | Bringt Skripte, win-acme und 1Password CLI auf den neuesten Stand. Kein neues Zertifikat, kein Neustart. |
+| 4 Aktualisieren | Bringt Skripte und 1Password CLI auf den neuesten Stand, win-acme auf die fest eingestellte Version. Kein neues Zertifikat, kein Neustart. |
 
 Danach erneuert die geplante Aufgabe von win-acme täglich um 03:00, wenn das Zertifikat fällig ist, und startet FileMaker Server dabei kurz neu.
 
@@ -68,7 +68,7 @@ Läuft auf dem Server die App „SkischulAssistant go“ (Dienst mit `SkischulAs
 
 | Ort | Inhalt |
 |---|---|
-| `C:\Program Files\win-acme` | win-acme, `settings.json` mit Zeitplan 03:00 und Skript-Timeout 30 Min. |
+| `C:\Program Files\win-acme` | win-acme in der fest eingestellten Version (`$WinAcmeRelease` im Einrichtungsskript, derzeit v2.2.9.1701), `settings.json` mit Zeitplan 03:00 und Skript-Timeout 30 Min. |
 | `C:\Program Files\1Password CLI` | `op.exe` (nur mit gültiger Signatur von AgileBits übernommen) |
 | `C:\ProgramData\hgi\Zertifikat` | die Skripte, `zugang.json` (Environment-ID und Token, per DPAPI an diesen Server gebunden, bei Secondaries dazu Rolle und Name), `pem\`, `Logs\`. Zugriff nur SYSTEM und Administratoren. |
 
